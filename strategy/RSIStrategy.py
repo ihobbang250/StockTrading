@@ -5,7 +5,7 @@ from util.time_helper import *
 from util.notifier import *
 import math
 import traceback
-
+import pandas as pd
 
 class RSIStrategy(QThread):
     def __init__(self):
@@ -65,23 +65,21 @@ class RSIStrategy(QThread):
             kospi_code_list = self.kiwoom.get_code_list_by_market("0")
 
             # KOSDAQ(10)에 상장된 모든 종목 코드를 가져와 kosdaq_code_list에 저장
-            #kosdaq_code_list = self.kiwoom.get_code_list_by_market("10")
+            kosdaq_code_list = self.kiwoom.get_code_list_by_market("10")
 
-            for code in kospi_code_list:
+            for code in kospi_code_list+kosdaq_code_list:
                 # 모든 종목 코드를 바탕으로 반복문 수행
                 code_name = self.kiwoom.get_master_code_name(code)
 
                 # 얻어온 종목명이 유니버스에 포함되어 있다면 딕셔너리에 추가
                 if code_name in universe_list:
                     universe[code] = code_name
+            
+            #코드, 종목명, 생성일자자를 열로 가지는 DaaFrame 생성
+            universe_df = pd.DataFrame(universe.items(), columns=['code', 'code_name'])
+            universe_df['created_at'] = now
 
-            # 코드, 종목명, 생성일자자를 열로 가지는 DaaFrame 생성
-            universe_df = pd.DataFrame({
-                'code': universe.keys(),
-                'code_name': universe.values(),
-                'created_at': [now] * len(universe.keys())
-            })
-
+            print(universe_df.head())
             # universe라는 테이블명으로 Dataframe을 DB에 저장함
             insert_df_to_db(self.strategy_name, 'universe', universe_df)
 
@@ -101,7 +99,8 @@ class RSIStrategy(QThread):
             print("({}/{}) {}".format(idx + 1, len(self.universe), code))
 
             # (1)케이스: 일봉 데이터가 아예 없는지 확인(장 종료 이후)
-            if check_transaction_closed() and not check_table_exist(self.strategy_name, code):
+            if not check_table_exist(self.strategy_name, code):
+                # check_transaction_closed() and 
                 # API를 이용해 조회한 가격 데이터 price_df에 저장
                 price_df = self.kiwoom.get_price_data(code)
                 # 코드를 테이블 이름으로 해서 데이터베이스에 저장
@@ -239,7 +238,7 @@ class RSIStrategy(QThread):
         rsi = df[-1:]['RSI(2)'].values[0]
 
         # 매도 조건 두 가지를 모두 만족하면 True
-        if rsi > 80 and close > purchase_price:
+        if rsi > 70 and close > purchase_price:
             return True
         else:
             return False
@@ -301,12 +300,15 @@ class RSIStrategy(QThread):
         df['RSI(2)'] = RSI
 
         # 종가(close)를 기준으로 이동 평균 구하기
-        df['ma20'] = df['close'].rolling(window=20, min_periods=1).mean()
-        df['ma60'] = df['close'].rolling(window=60, min_periods=1).mean()
+        df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
+        df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+
 
         rsi = df[-1:]['RSI(2)'].values[0]
-        ma20 = df[-1:]['ma20'].values[0]
-        ma60 = df[-1:]['ma60'].values[0]
+        ema10 = df[-1:]['ema10'].values[0]
+        ema20 = df[-1:]['ema20'].values[0]
+        ema50 = df[-1:]['ema50'].values[0]
 
         # 2 거래일 전 날짜(index)를 구함
         idx = df.index.get_loc(datetime.now().strftime('%Y%m%d')) - 2
@@ -318,8 +320,9 @@ class RSIStrategy(QThread):
         price_diff = (close - close_2days_ago) / close_2days_ago * 100
 
         # (3)매수 신호 확인(조건에 부합하면 주문 접수)
-        if ma20 > ma60 and rsi < 5 and price_diff < -2:
+        if (ema10 >= ema20) :
             # (4)이미 보유한 종목, 매수 주문 접수한 종목의 합이 보유 가능 최대치(10개)라면 더 이상 매수 불가하므로 종료
+            print("buy_signal")
             if (self.get_balance_count() + self.get_buy_order_count()) >= 10:
                 return
 
